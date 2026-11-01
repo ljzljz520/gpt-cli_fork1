@@ -13,6 +13,7 @@ from gptcli.completion import (
     UsageEvent,
     ThinkingDeltaEvent,
 )
+from gptcli.providers.compiler import ANTHROPIC_CAPABILITIES, compile_messages
 
 api_key = os.environ.get("ANTHROPIC_API_KEY")
 
@@ -25,6 +26,11 @@ def get_client():
 
 
 class AnthropicCompletionProvider(CompletionProvider):
+    def __init__(self, client=None):
+        # Allows injecting a mock client in tests. The real client is created
+        # lazily so config overrides of the module-level ``api_key`` apply.
+        self.client = client
+
     def complete(
         self, messages: List[Message], args: dict, stream: bool = False
     ) -> Iterator[CompletionEvent]:
@@ -73,13 +79,16 @@ class AnthropicCompletionProvider(CompletionProvider):
                 "budget_tokens": args["thinking_budget"],
             }
 
-        if len(messages) > 0 and messages[0]["role"] == "system":
-            kwargs["system"] = messages[0]["content"]
-            messages = messages[1:]
+        # Compile and validate before making a request. Leading system
+        # messages are merged into the system slot; session messages are not
+        # modified.
+        compiled = compile_messages(messages, ANTHROPIC_CAPABILITIES)
+        if compiled.instruction is not None:
+            kwargs["system"] = compiled.instruction
 
-        kwargs["messages"] = messages
+        kwargs["messages"] = compiled.messages
 
-        client = get_client()
+        client = self.client if self.client is not None else get_client()
         input_tokens = None
         try:
             if stream:

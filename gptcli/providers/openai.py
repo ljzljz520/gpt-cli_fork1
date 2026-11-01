@@ -16,6 +16,7 @@ from gptcli.completion import (
     ToolCallEvent,
     UsageEvent,
 )
+from gptcli.providers.compiler import OPENAI_CAPABILITIES, compile_messages
 
 
 def is_reasoning_model(model: str) -> bool:
@@ -23,6 +24,9 @@ def is_reasoning_model(model: str) -> bool:
 
 
 class OpenAICompletionProvider(CompletionProvider):
+    # Capabilities used by the compilation boundary; Azure overrides this.
+    capabilities = OPENAI_CAPABILITIES
+
     def __init__(self, base_url: Optional[str] = None, api_key: Optional[str] = None):
         self.client = OpenAI(
             api_key=api_key or openai.api_key, base_url=base_url or openai.base_url
@@ -31,6 +35,10 @@ class OpenAICompletionProvider(CompletionProvider):
     def complete(
         self, messages: List[Message], args: dict, stream: bool = False
     ) -> Iterator[CompletionEvent]:
+        # Validate and copy messages before making a request. System messages
+        # are passed inline in their original positions.
+        compiled = compile_messages(messages, self.capabilities)
+
         model = args["model"]
         if model.startswith("oai-compat:"):
             model = model[len("oai-compat:") :]
@@ -54,7 +62,7 @@ class OpenAICompletionProvider(CompletionProvider):
             if stream:
                 response_iter = self.client.responses.create(
                     model=model,
-                    input=cast(ResponseInputParam, messages),
+                    input=cast(ResponseInputParam, compiled.messages),
                     stream=True,
                     store=False,
                     **kwargs,
@@ -83,7 +91,7 @@ class OpenAICompletionProvider(CompletionProvider):
             else:
                 response = self.client.responses.create(
                     model=model,
-                    input=cast(ResponseInputParam, messages),
+                    input=cast(ResponseInputParam, compiled.messages),
                     stream=False,
                     store=False,
                     **kwargs,

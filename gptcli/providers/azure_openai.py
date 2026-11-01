@@ -1,9 +1,13 @@
 import openai
 from openai import AzureOpenAI
+from gptcli.providers.compiler import AZURE_OPENAI_CAPABILITIES
 from gptcli.providers.openai import OpenAICompletionProvider
 
 
 class AzureOpenAICompletionProvider(OpenAICompletionProvider):
+    # Same inline compilation as OpenAI, but diagnostics mention Azure.
+    capabilities = AZURE_OPENAI_CAPABILITIES
+
     def __init__(self):
         super().__init__()
         self.client = AzureOpenAI(

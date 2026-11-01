@@ -12,6 +12,7 @@ from gptcli.completion import (
     Pricing,
     UsageEvent,
 )
+from gptcli.providers.compiler import GOOGLE_CAPABILITIES, compile_messages
 
 ROLE_MAP = {
     "user": "user",
@@ -23,26 +24,34 @@ api_key = os.environ.get("GEMINI_API_KEY")
 
 
 class GoogleCompletionProvider(CompletionProvider):
+    def __init__(self, client=None):
+        # Allows injecting a mock client in tests. The real client is created
+        # lazily so config overrides of the module-level ``api_key`` apply.
+        self.client = client
+
+    def _get_client(self):
+        if self.client is not None:
+            return self.client
+        return genai.Client(api_key=api_key)
+
     def complete(
         self, messages: List[Message], args: dict, stream: bool = False
     ) -> Iterator[CompletionEvent]:
-        client = genai.Client(api_key=api_key)
+        # Compile and validate before creating a client or making a request.
+        compiled = compile_messages(messages, GOOGLE_CAPABILITIES)
+        client = self._get_client()
         model = args["model"]
-        system_instruction = None
-        if messages[0]["role"] == "system":
-            system_instruction = messages[0]["content"]
-            messages = messages[1:]
 
         contents = [
             types.Content(
                 role=ROLE_MAP[m["role"]],
                 parts=[types.Part.from_text(text=m["content"])],
             )
-            for m in messages
+            for m in compiled.messages
         ]
 
         generate_content_config = types.GenerateContentConfig(
-            system_instruction=system_instruction,
+            system_instruction=compiled.instruction,
             temperature=args.get("temperature"),
             top_p=args.get("top_p"),
             thinking_config=(
@@ -55,6 +64,10 @@ class GoogleCompletionProvider(CompletionProvider):
             ),
             response_mime_type="text/plain",
         )
+
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_tokens = 0
 
         if stream:
             response = client.models.generate_content_stream(
@@ -78,9 +91,6 @@ class GoogleCompletionProvider(CompletionProvider):
             )
             yield MessageDeltaEvent(response.text or "")
 
-            prompt_tokens = 0
-            completion_tokens = 0
-            total_tokens = 0
             if response.usage_metadata:
                 prompt_tokens = response.usage_metadata.prompt_token_count or 0
                 completion_tokens = response.usage_metadata.candidates_token_count or 0

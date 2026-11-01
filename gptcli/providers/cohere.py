@@ -1,6 +1,7 @@
 import os
 import cohere
-from typing import Iterator, List
+from cohere.types import ChatbotMessage, UserMessage
+from typing import Iterator, List, Optional
 
 from gptcli.completion import (
     CompletionEvent,
@@ -12,34 +13,30 @@ from gptcli.completion import (
     Pricing,
     UsageEvent,
 )
+from gptcli.providers.compiler import COHERE_CAPABILITIES, compile_messages
 
 api_key = os.environ.get("COHERE_API_KEY")
 
-ROLE_MAP = {
-    "system": "SYSTEM",
-    "user": "USER",
-    "assistant": "CHATBOT",
-}
 
-
-def map_message(message: Message) -> cohere.Message:
-    if message["role"] == "system":
-        return cohere.Message_System(message=message["content"])
-    elif message["role"] == "user":
-        return cohere.Message_User(message=message["content"])
-    elif message["role"] == "assistant":
-        return cohere.Message_Chatbot(message=message["content"])
-    else:
-        raise ValueError(f"Unknown message role: {message['role']}")
+def map_message(message: Message):
+    if message["role"] == "assistant":
+        return ChatbotMessage(message=message["content"])
+    return UserMessage(message=message["content"])
 
 
 class CohereCompletionProvider(CompletionProvider):
-    def __init__(self):
-        self.client = cohere.Client(api_key=api_key)
+    def __init__(self, client: Optional[cohere.Client] = None):
+        # Allows injecting a mock client in tests.
+        self.client = client if client is not None else cohere.Client(api_key=api_key)
 
     def complete(
         self, messages: List[Message], args: dict, stream: bool = False
     ) -> Iterator[CompletionEvent]:
+        # Compile and validate before making a request. The compiler ensures
+        # the last turn is a user message and history only contains
+        # user/assistant turns.
+        compiled = compile_messages(messages, COHERE_CAPABILITIES)
+
         kwargs = {}
         if "temperature" in args:
             kwargs["temperature"] = args["temperature"]
@@ -48,14 +45,12 @@ class CohereCompletionProvider(CompletionProvider):
 
         model = args["model"]
 
-        if messages[0]["role"] == "system":
-            kwargs["preamble"] = messages[0]["content"]
-            messages = messages[1:]
+        if compiled.instruction is not None:
+            kwargs["preamble"] = compiled.instruction
 
-        message = messages[-1]
-        assert message["role"] == "user", "Last message must be user message"
+        message = compiled.messages[-1]
 
-        chat_history = [map_message(m) for m in messages[:-1]]
+        chat_history = [map_message(m) for m in compiled.messages[:-1]]
 
         try:
             if stream:
